@@ -5,8 +5,6 @@
 #include <NTPClient.h>
 #include <TimeLib.h>
 #include <EEPROM.h>
-#include <ArduinoOTA.h>
-
 
 #define EEPROM_SIZE 200
 #define SSID_ADDR 0
@@ -182,14 +180,14 @@ void startWebInterface() {
   server.on("/", handleRoot);
 
   server.on("/save", []() {
-    if (server.hasArg("ssid") && server.hasArg("pass")) {
+    if (server.hasArg("ssid") && server.hasArg("pass") && server.arg("ssid") != "" && server.arg("pass") != "") {
       storedSSID = server.arg("ssid");
       storedPASS = server.arg("pass");
       saveWiFiToEEPROM(storedSSID, storedPASS);
     }
-    if (server.hasArg("sunrise")) sunriseOffsetMin = server.arg("sunrise").toInt();
-    if (server.hasArg("sunset"))  sunsetOffsetMin  = server.arg("sunset").toInt();
-    if (server.hasArg("tz")) {
+    if (server.hasArg("sunrise") && server.arg("sunrise") != "") sunriseOffsetMin = server.arg("sunrise").toInt();
+    if (server.hasArg("sunset") && server.arg("sunset") != "")  sunsetOffsetMin  = server.arg("sunset").toInt();
+    if (server.hasArg("tz") && server.arg("tz") != "") {
       utcOffset = server.arg("tz").toInt() * 3600;
       timeClient.setTimeOffset(utcOffset);
     }
@@ -251,28 +249,6 @@ void setup() {
   }
   updateSunTimes();
   startWebInterface();
-    // Настройка OTA
-  ArduinoOTA.setHostname("esp-astro");
-  ArduinoOTA.onStart([]() {
-    Serial.println("Start OTA update");
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd OTA update");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("OTA Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
-  });
-  ArduinoOTA.begin();
-  Serial.println("OTA ready");
-
 }
 
 void loop() {
@@ -285,6 +261,4 @@ void loop() {
       lastRelayCheck = millis();
     }
   }
-  ArduinoOTA.handle();
-
 }
