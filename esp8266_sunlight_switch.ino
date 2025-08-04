@@ -4,56 +4,59 @@
 #include <TimeLib.h>
 #include <EEPROM.h>
 
-// ===================== НАСТРОЙКИ ПО УМОЛЧАНИЮ =====================
-const char* ssid = "your_wifi_ssid";
-const char* password = "your_wifi_password";
+// ==== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====
+const char* ssid = "your_wifi_ssid";     // Заменить на свой SSID
+const char* password = "your_wifi_pass"; // Заменить на свой пароль
 
-// Местоположение (пример: Одесса)
-float latitude = 46.4825;
-float longitude = 30.7233;
-int utcOffset = 3 * 3600; // смещение по UTC в секундах
+const float latitude = 46.4825;   // Одесса, для примера
+const float longitude = 30.7233;
+const int utcOffset = 3 * 3600;   // +03:00 в секундах
 
-// Смещения для реле (в секундах)
-int sunsetOffset = 0;
-int sunriseOffset = 0;
+const int sunsetOffset = 0;       // в секундах
+const int sunriseOffset = 0;
 
-// Пин реле
-const int relayPin = D1;
+const int relayPin = 5;           // GPIO5 = D1 на NodeMCU
 
-// ===================== ОБЪЕКТЫ =====================
+// ==== ВРЕМЯ ====
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);  // обновление времени раз в час
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);  // обновление каждый час
 
-// ===================== ВРЕМЕННЫЕ ПЕРЕМЕННЫЕ =====================
 time_t sunriseTime = 0;
 time_t sunsetTime = 0;
 
-// ===================== ФУНКЦИИ =====================
-
-void connectWiFi() {
-  Serial.print("Connecting to Wi-Fi: ");
-  Serial.print(ssid);
+// ==== ПОДКЛЮЧЕНИЕ К WI-FI ====
+void connectWiFiOrStartAP() {
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+
+  Serial.print("Connecting to Wi-Fi");
   int retries = 0;
   while (WiFi.status() != WL_CONNECTED && retries < 20) {
     delay(500);
     Serial.print(".");
     retries++;
   }
+
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected. IP address: " + WiFi.localIP().toString());
+    Serial.println("\nWi-Fi connected. IP: " + WiFi.localIP().toString());
   } else {
-    Serial.println("\nWiFi connection failed.");
+    Serial.println("\nWi-Fi failed. Starting Access Point...");
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("SunlightSetup");
+
+    Serial.print("AP IP address: ");
+    Serial.println(WiFi.softAPIP());
   }
 }
 
-// Упрощённый расчёт восхода/заката
+// ==== ПРОСТОЙ РАСЧЁТ ВРЕМЕНИ СОЛНЦА ====
 time_t calculateSunEvent(bool isSunrise) {
-  // пример — статичное время (в будущем заменим на точные астрономические расчёты)
+  // В будущем — заменить на реальный астрономический расчёт
   time_t now = timeClient.getEpochTime();
   tmElements_t tm;
   breakTime(now, tm);
-  tm.Hour = isSunrise ? 5 : 21;
+  tm.Hour = isSunrise ? 5 : 21; // Условно: восход в 5:00, закат в 21:00
   tm.Minute = 0;
   tm.Second = 0;
   return makeTime(tm);
@@ -62,16 +65,24 @@ time_t calculateSunEvent(bool isSunrise) {
 void updateSunTimes() {
   sunriseTime = calculateSunEvent(true) + sunriseOffset;
   sunsetTime = calculateSunEvent(false) + sunsetOffset;
-  Serial.println("Sunrise: " + String(hour(sunriseTime)) + ":" + String(minute(sunriseTime)));
-  Serial.println("Sunset: " + String(hour(sunsetTime)) + ":" + String(minute(sunsetTime)));
+
+  Serial.print("Sunrise time: ");
+  Serial.print(hour(sunriseTime));
+  Serial.print(":");
+  Serial.println(minute(sunriseTime));
+
+  Serial.print("Sunset time: ");
+  Serial.print(hour(sunsetTime));
+  Serial.print(":");
+  Serial.println(minute(sunsetTime));
 }
 
 void controlRelay(time_t now) {
   if (now >= sunsetTime || now <= sunriseTime) {
-    digitalWrite(relayPin, HIGH); // включить свет
+    digitalWrite(relayPin, HIGH); // ВКЛ свет
     Serial.println("Relay ON");
   } else {
-    digitalWrite(relayPin, LOW); // выключить
+    digitalWrite(relayPin, LOW);  // ВЫКЛ
     Serial.println("Relay OFF");
   }
 }
@@ -84,27 +95,36 @@ void setup() {
   pinMode(relayPin, OUTPUT);
   digitalWrite(relayPin, LOW);
 
-  EEPROM.begin(512); // если будут настройки
+  connectWiFiOrStartAP();
 
-  connectWiFi();
-  timeClient.begin();
-
-  if (timeClient.forceUpdate()) {
-    Serial.println("Time synced: " + timeClient.getFormattedTime());
-    updateSunTimes();
-  } else {
-    Serial.println("Failed to sync time.");
+  if (WiFi.status() == WL_CONNECTED) {
+    timeClient.begin();
+    if (timeClient.forceUpdate()) {
+      Serial.println("Time synced: " + timeClient.getFormattedTime());
+      updateSunTimes();
+    } else {
+      Serial.println("Time sync failed.");
+    }
   }
 }
 
 void loop() {
-  timeClient.update();
-  time_t now = timeClient.getEpochTime();
+  if (WiFi.status() == WL_CONNECTED) {
+    timeClient.update();
+    time_t now = timeClient.getEpochTime();
 
-  static unsigned long lastUpdate = 0;
-  if (millis() - lastUpdate > 60 * 1000) {  // проверка каждую минуту
-    Serial.println("Current time: " + String(hour(now)) + ":" + String(minute(now)));
-    controlRelay(now);
-    lastUpdate = millis();
+    static unsigned long lastUpdate = 0;
+    if (millis() - lastUpdate > 60000) {  // каждую минуту
+      Serial.print("Current time: ");
+      Serial.print(hour(now));
+      Serial.print(":");
+      Serial.println(minute(now));
+
+      controlRelay(now);
+      lastUpdate = millis();
+    }
+  } else {
+    // без Wi-Fi просто не трогаем реле
+    delay(5000);
   }
 }
