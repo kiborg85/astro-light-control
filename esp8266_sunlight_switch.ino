@@ -6,28 +6,38 @@
 #include <TimeLib.h>
 #include <EEPROM.h>
 
-#define EEPROM_SIZE 200
+#define EEPROM_SIZE 256
 #define SSID_ADDR 0
 #define PASS_ADDR 100
 #define SUNRISE_OFFSET_ADDR 140
 #define SUNSET_OFFSET_ADDR 144
 #define TZ_OFFSET_ADDR 148
+#define LAT_ADDR 152
+#define LON_ADDR 160
+#define DST_MODE_ADDR 168  // 0=off, 1=manual, 2=auto
+#define DST_MANUAL_ADDR 169 // 0=standard, 1=summer
 
 ESP8266WebServer server(80);
 WiFiUDP ntpUDP;
+
 int utcOffset = 3 * 3600;
 int32_t sunriseOffsetMin = 0;
 int32_t sunsetOffsetMin = 0;
 float latitude = 46.4825;
 float longitude = 30.7233;
+uint8_t dstMode = 0;
+uint8_t dstManual = 0;
+
 String storedSSID;
 String storedPASS;
+
 time_t sunriseRaw = 0;
 time_t sunsetRaw = 0;
 time_t sunriseFinal = 0;
 time_t sunsetFinal = 0;
 time_t lastSyncTime = 0;
 bool relayForced = false;
+
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);
 
 void saveWiFiToEEPROM(const String& ssid, const String& pass) {
@@ -38,16 +48,19 @@ void saveWiFiToEEPROM(const String& ssid, const String& pass) {
   EEPROM.commit();
 }
 
-void saveOffsetsToEEPROM() {
+void saveSettingsToEEPROM() {
   EEPROM.put(SUNRISE_OFFSET_ADDR, sunriseOffsetMin);
   EEPROM.put(SUNSET_OFFSET_ADDR, sunsetOffsetMin);
   EEPROM.put(TZ_OFFSET_ADDR, utcOffset);
+  EEPROM.put(LAT_ADDR, latitude);
+  EEPROM.put(LON_ADDR, longitude);
+  EEPROM.write(DST_MODE_ADDR, dstMode);
+  EEPROM.write(DST_MANUAL_ADDR, dstManual);
   EEPROM.commit();
 }
 
 void loadSettingsFromEEPROM() {
-  char ssid[33];
-  char pass[33];
+  char ssid[33], pass[33];
   for (int i = 0; i < 32; i++) {
     ssid[i] = EEPROM.read(SSID_ADDR + i);
     pass[i] = EEPROM.read(PASS_ADDR + i);
@@ -56,10 +69,33 @@ void loadSettingsFromEEPROM() {
   pass[32] = '\0';
   storedSSID = String(ssid);
   storedPASS = String(pass);
+
   EEPROM.get(SUNRISE_OFFSET_ADDR, sunriseOffsetMin);
   EEPROM.get(SUNSET_OFFSET_ADDR, sunsetOffsetMin);
   EEPROM.get(TZ_OFFSET_ADDR, utcOffset);
+  EEPROM.get(LAT_ADDR, latitude);
+  EEPROM.get(LON_ADDR, longitude);
+  dstMode = EEPROM.read(DST_MODE_ADDR);
+  dstManual = EEPROM.read(DST_MANUAL_ADDR);
+
+  applyDST();
   timeClient.setTimeOffset(utcOffset);
+}
+
+void applyDST() {
+  if (dstMode == 1 && dstManual == 1) {
+    utcOffset += 3600;
+  } else if (dstMode == 2) {
+    // Simple DST rule: last Sunday of March to last Sunday of October
+    time_t now = timeClient.getEpochTime();
+    tmElements_t tm;
+    breakTime(now, tm);
+    if ((tm.Month > 3 && tm.Month < 10) || 
+        (tm.Month == 3 && tm.Day >= 25 && weekday(now) == 1) ||
+        (tm.Month == 10 && !(tm.Day >= 25 && weekday(now) == 1))) {
+      utcOffset += 3600;
+    }
+  }
 }
 
 int getDayOfYear(time_t t) {
@@ -157,13 +193,22 @@ void handleRoot() {
   page += "<p>Final ON time: " + formatTime(sunsetFinal) + " (offset " + String(sunsetOffsetMin) + " min)</p>";
   page += "<p>Final OFF time: " + formatTime(sunriseFinal) + " (offset " + String(sunriseOffsetMin) + " min)</p>";
   page += "<hr>";
+  page += "<p>Latitude: " + String(latitude, 6) + "</p>";
+  page += "<p>Longitude: " + String(longitude, 6) + "</p>";
+  page += "<p>DST Mode: " + String(dstMode == 0 ? "Off" : dstMode == 1 ? "Manual" : "Auto") + "</p>";
+  if (dstMode == 1) page += "<p>DST Manual state: " + String(dstManual == 1 ? "Summer Time" : "Standard Time") + "</p>";
+  page += "<hr>";
   page += R"rawliteral(
     <form method='POST' action='/save'>
       SSID:<br><input name='ssid'><br>
       Password:<br><input name='pass' type='password'><br><br>
       Timezone offset (hours):<br><input name='tz'><br>
       Sunrise offset (min):<br><input name='sunrise'><br>
-      Sunset offset (min):<br><input name='sunset'><br><br>
+      Sunset offset (min):<br><input name='sunset'><br>
+      Latitude:<br><input name='lat'><br>
+      Longitude:<br><input name='lon'><br>
+      DST Mode (0=Off, 1=Manual, 2=Auto):<br><input name='dstmode'><br>
+      If Manual, DST active? (0=Standard, 1=Summer):<br><input name='dstmanual'><br><br>
       <input type='submit' value='Save & Reboot'>
     </form>
     <form method='POST' action='/sync'>
@@ -189,9 +234,13 @@ void startWebInterface() {
     if (server.hasArg("sunset") && server.arg("sunset") != "")  sunsetOffsetMin  = server.arg("sunset").toInt();
     if (server.hasArg("tz") && server.arg("tz") != "") {
       utcOffset = server.arg("tz").toInt() * 3600;
-      timeClient.setTimeOffset(utcOffset);
     }
-    saveOffsetsToEEPROM();
+    if (server.hasArg("lat") && server.arg("lat") != "") latitude = server.arg("lat").toFloat();
+    if (server.hasArg("lon") && server.arg("lon") != "") longitude = server.arg("lon").toFloat();
+    if (server.hasArg("dstmode") && server.arg("dstmode") != "") dstMode = server.arg("dstmode").toInt();
+    if (server.hasArg("dstmanual") && server.arg("dstmanual") != "") dstManual = server.arg("dstmanual").toInt();
+
+    saveSettingsToEEPROM();
     server.send(200, "text/html", "<h1>Saved. Rebooting...</h1>");
     delay(1500);
     ESP.restart();
@@ -243,6 +292,7 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   loadSettingsFromEEPROM();
   setupWiFi();
+  timeClient.setTimeOffset(utcOffset);
   timeClient.begin();
   if (timeClient.forceUpdate()) {
     lastSyncTime = timeClient.getEpochTime();
@@ -262,3 +312,4 @@ void loop() {
     }
   }
 }
+
