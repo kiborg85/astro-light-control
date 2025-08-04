@@ -3,6 +3,9 @@
 #include <NTPClient.h>
 #include <TimeLib.h>
 #include <EEPROM.h>
+#include <ESP8266WebServer.h>
+
+ESP8266WebServer server(80);
 
 // ==== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====
 const char* ssid = "your_wifi_ssid";     // Заменить на свой SSID
@@ -48,6 +51,56 @@ void connectWiFiOrStartAP() {
     Serial.print("AP IP address: ");
     Serial.println(WiFi.softAPIP());
   }
+  if (WiFi.status() == WL_CONNECTED) {
+  Serial.println("\nWi-Fi connected. IP: " + WiFi.localIP().toString());
+} else {
+  Serial.println("\nWi-Fi failed. Starting Access Point...");
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("SunlightSetup");
+
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(apIP);
+
+  // Веб-страница по адресу http://192.168.4.1/
+    server.on("/", []() {
+    String html = R"rawliteral(
+      <h1>Wi-Fi Setup</h1>
+      <form method='POST' action='/save'>
+        SSID:<br><input type='text' name='ssid'><br>
+        Password:<br><input type='password' name='pass'><br><br>
+        <input type='submit' value='Save & Reboot'>
+      </form>
+    )rawliteral";
+    server.send(200, "text/html", html);
+  });
+
+  server.on("/save", []() {
+    if (server.hasArg("ssid") && server.hasArg("pass")) {
+      String ssid = server.arg("ssid");
+      String pass = server.arg("pass");
+
+      Serial.println("Saving Wi-Fi credentials:");
+      Serial.println("SSID: " + ssid);
+      Serial.println("PASS: " + pass);
+
+      // Сохраняем в EEPROM (пока не реализовано)
+      // позже добавим функцию saveWiFiToEEPROM(ssid, pass);
+
+      server.send(200, "text/html", "<h1>Saved. Rebooting...</h1>");
+      delay(2000);
+      ESP.restart();
+    } else {
+      server.send(400, "text/plain", "Bad Request");
+    }
+  });
+
+
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
 }
 
 // ==== ПРОСТОЙ РАСЧЁТ ВРЕМЕНИ СОЛНЦА ====
@@ -109,6 +162,10 @@ void setup() {
 }
 
 void loop() {
+  if (WiFi.getMode() == WIFI_AP) {
+      server.handleClient();
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     timeClient.update();
     time_t now = timeClient.getEpochTime();
