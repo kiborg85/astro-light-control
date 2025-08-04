@@ -1,70 +1,82 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <TimeLib.h>
 #include <EEPROM.h>
-#include <ESP8266WebServer.h>
 
+// ==== Параметры ====
+#define EEPROM_SIZE 200
+#define SSID_ADDR 0
+#define PASS_ADDR 100
+
+const int relayPin = 5; // GPIO5 = D1 на NodeMCU
+const int utcOffset = 3 * 3600; // +03:00 в секундах
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);
 ESP8266WebServer server(80);
 
-// ==== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====
-const char* ssid = "your_wifi_ssid";     // Заменить на свой SSID
-const char* password = "your_wifi_pass"; // Заменить на свой пароль
-
-const float latitude = 46.4825;   // Одесса, для примера
-const float longitude = 30.7233;
-const int utcOffset = 3 * 3600;   // +03:00 в секундах
-
-const int sunsetOffset = 0;       // в секундах
-const int sunriseOffset = 0;
-
-const int relayPin = 5;           // GPIO5 = D1 на NodeMCU
-
-// ==== ВРЕМЯ ====
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);  // обновление каждый час
+String storedSSID;
+String storedPASS;
 
 time_t sunriseTime = 0;
 time_t sunsetTime = 0;
 
-// ==== ПОДКЛЮЧЕНИЕ К WI-FI ====
-void connectWiFiOrStartAP() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+// ==== EEPROM ====
+void saveWiFiToEEPROM(const String& ssid, const String& pass) {
+  Serial.println("Saving Wi-Fi to EEPROM...");
+  for (int i = 0; i < 32; i++) {
+    EEPROM.write(SSID_ADDR + i, i < ssid.length() ? ssid[i] : 0);
+    EEPROM.write(PASS_ADDR + i, i < pass.length() ? pass[i] : 0);
+  }
+  EEPROM.commit();
+  Serial.println("Saved.");
+}
 
-  Serial.print("Connecting to Wi-Fi");
+void loadWiFiFromEEPROM() {
+  char ssid[33];
+  char pass[33];
+  for (int i = 0; i < 32; i++) {
+    ssid[i] = EEPROM.read(SSID_ADDR + i);
+    pass[i] = EEPROM.read(PASS_ADDR + i);
+  }
+  ssid[32] = '\0';
+  pass[32] = '\0';
+  storedSSID = String(ssid);
+  storedPASS = String(pass);
+  Serial.println("Loaded from EEPROM:");
+  Serial.println("SSID: " + storedSSID);
+  Serial.println("PASS: " + storedPASS);
+}
+
+// ==== Wi-Fi ====
+void connectWiFiFromEEPROM() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(storedSSID.c_str(), storedPASS.c_str());
+  Serial.print("Connecting to Wi-Fi: ");
+  Serial.print(storedSSID);
   int retries = 0;
   while (WiFi.status() != WL_CONNECTED && retries < 20) {
     delay(500);
     Serial.print(".");
     retries++;
   }
-
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWi-Fi connected. IP: " + WiFi.localIP().toString());
+    Serial.println("\nConnected. IP: " + WiFi.localIP().toString());
   } else {
-    Serial.println("\nWi-Fi failed. Starting Access Point...");
-
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("SunlightSetup");
-
-    Serial.print("AP IP address: ");
-    Serial.println(WiFi.softAPIP());
+    Serial.println("\nWi-Fi connection failed.");
   }
-  if (WiFi.status() == WL_CONNECTED) {
-  Serial.println("\nWi-Fi connected. IP: " + WiFi.localIP().toString());
-} else {
-  Serial.println("\nWi-Fi failed. Starting Access Point...");
+}
 
+void startAccessPoint() {
   WiFi.mode(WIFI_AP);
   WiFi.softAP("SunlightSetup");
-
   IPAddress apIP = WiFi.softAPIP();
   Serial.print("AP IP address: ");
   Serial.println(apIP);
 
-  // Веб-страница по адресу http://192.168.4.1/
-    server.on("/", []() {
+  server.on("/", []() {
     String html = R"rawliteral(
       <h1>Wi-Fi Setup</h1>
       <form method='POST' action='/save'>
@@ -81,13 +93,11 @@ void connectWiFiOrStartAP() {
       String ssid = server.arg("ssid");
       String pass = server.arg("pass");
 
-      Serial.println("Saving Wi-Fi credentials:");
+      Serial.println("Received new Wi-Fi credentials:");
       Serial.println("SSID: " + ssid);
       Serial.println("PASS: " + pass);
 
-      // Сохраняем в EEPROM (пока не реализовано)
-      // позже добавим функцию saveWiFiToEEPROM(ssid, pass);
-
+      saveWiFiToEEPROM(ssid, pass);
       server.send(200, "text/html", "<h1>Saved. Rebooting...</h1>");
       delay(2000);
       ESP.restart();
@@ -96,50 +106,41 @@ void connectWiFiOrStartAP() {
     }
   });
 
-
   server.begin();
-  Serial.println("HTTP server started");
+  Serial.println("HTTP server started.");
 }
 
-}
-
-// ==== ПРОСТОЙ РАСЧЁТ ВРЕМЕНИ СОЛНЦА ====
+// ==== Восход/Закат (заглушка) ====
 time_t calculateSunEvent(bool isSunrise) {
-  // В будущем — заменить на реальный астрономический расчёт
   time_t now = timeClient.getEpochTime();
   tmElements_t tm;
   breakTime(now, tm);
-  tm.Hour = isSunrise ? 5 : 21; // Условно: восход в 5:00, закат в 21:00
+  tm.Hour = isSunrise ? 5 : 21;
   tm.Minute = 0;
   tm.Second = 0;
   return makeTime(tm);
 }
 
 void updateSunTimes() {
-  sunriseTime = calculateSunEvent(true) + sunriseOffset;
-  sunsetTime = calculateSunEvent(false) + sunsetOffset;
-
-  Serial.print("Sunrise time: ");
-  Serial.print(hour(sunriseTime));
-  Serial.print(":");
-  Serial.println(minute(sunriseTime));
-
-  Serial.print("Sunset time: ");
-  Serial.print(hour(sunsetTime));
-  Serial.print(":");
-  Serial.println(minute(sunsetTime));
+  sunriseTime = calculateSunEvent(true);
+  sunsetTime = calculateSunEvent(false);
+  Serial.print("Sunrise: ");
+  Serial.println(String(hour(sunriseTime)) + ":" + String(minute(sunriseTime)));
+  Serial.print("Sunset: ");
+  Serial.println(String(hour(sunsetTime)) + ":" + String(minute(sunsetTime)));
 }
 
 void controlRelay(time_t now) {
   if (now >= sunsetTime || now <= sunriseTime) {
-    digitalWrite(relayPin, HIGH); // ВКЛ свет
+    digitalWrite(relayPin, HIGH);
     Serial.println("Relay ON");
   } else {
-    digitalWrite(relayPin, LOW);  // ВЫКЛ
+    digitalWrite(relayPin, LOW);
     Serial.println("Relay OFF");
   }
 }
 
+// ==== SETUP ====
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -148,40 +149,39 @@ void setup() {
   pinMode(relayPin, OUTPUT);
   digitalWrite(relayPin, LOW);
 
-  connectWiFiOrStartAP();
+  EEPROM.begin(EEPROM_SIZE);
+  loadWiFiFromEEPROM();
+  connectWiFiFromEEPROM();
 
   if (WiFi.status() == WL_CONNECTED) {
     timeClient.begin();
     if (timeClient.forceUpdate()) {
-      Serial.println("Time synced: " + timeClient.getFormattedTime());
+      Serial.println("Time synced.");
       updateSunTimes();
     } else {
-      Serial.println("Time sync failed.");
+      Serial.println("NTP sync failed.");
     }
+  } else {
+    startAccessPoint();
   }
 }
 
+// ==== LOOP ====
 void loop() {
   if (WiFi.getMode() == WIFI_AP) {
-      server.handleClient();
+    server.handleClient();
+    delay(10);
+    return;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    timeClient.update();
-    time_t now = timeClient.getEpochTime();
+  timeClient.update();
+  time_t now = timeClient.getEpochTime();
 
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate > 60000) {  // каждую минуту
-      Serial.print("Current time: ");
-      Serial.print(hour(now));
-      Serial.print(":");
-      Serial.println(minute(now));
-
-      controlRelay(now);
-      lastUpdate = millis();
-    }
-  } else {
-    // без Wi-Fi просто не трогаем реле
-    delay(5000);
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate > 60000) {
+    Serial.print("Current time: ");
+    Serial.println(String(hour(now)) + ":" + String(minute(now)));
+    controlRelay(now);
+    lastUpdate = millis();
   }
 }
