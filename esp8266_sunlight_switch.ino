@@ -118,8 +118,8 @@ time_t getSunEventUTC(time_t now, bool isSunrise, float lat, float lon) {
 
 void updateSunTimes() {
   time_t now = timeClient.getEpochTime();
-  sunriseRaw = getSunEventUTC(now, true, latitude, longitude) + timeClient.getTimeOffset();
-  sunsetRaw  = getSunEventUTC(now, false, latitude, longitude) + timeClient.getTimeOffset();
+  sunriseRaw = getSunEventUTC(now, true, latitude, longitude) + utcOffset;
+  sunsetRaw  = getSunEventUTC(now, false, latitude, longitude) + utcOffset;
   sunriseFinal = sunriseRaw + sunriseOffsetMin * 60;
   sunsetFinal  = sunsetRaw  + sunsetOffsetMin * 60;
 }
