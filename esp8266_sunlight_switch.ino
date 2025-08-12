@@ -141,10 +141,16 @@ time_t getSunEventUTC(time_t now, bool isSunrise, float lat, float lon) {
 
 void updateSunTimes() {
   time_t now = timeClient.getEpochTime();
-  sunriseRaw = getSunEventUTC(now, true, latitude, longitude) + utcOffset;
-  sunsetRaw  = getSunEventUTC(now, false, latitude, longitude) + utcOffset;
-  sunriseFinal = sunriseRaw + sunriseOffsetMin * 60;
-  sunsetFinal  = sunsetRaw  + sunsetOffsetMin * 60;
+
+  // Calculate sunrise and sunset in UTC first
+  time_t sunriseUTC = getSunEventUTC(now, true, latitude, longitude);
+  time_t sunsetUTC  = getSunEventUTC(now, false, latitude, longitude);
+
+  // Convert to local time and apply user offsets
+  sunriseRaw = sunriseUTC + utcOffset;
+  sunsetRaw  = sunsetUTC + utcOffset;
+  sunriseFinal = sunriseUTC + sunriseOffsetMin * 60 + utcOffset;
+  sunsetFinal  = sunsetUTC  + sunsetOffsetMin * 60 + utcOffset;
 }
 
 String formatTime(time_t t) {
