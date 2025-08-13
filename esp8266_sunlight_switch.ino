@@ -5,6 +5,7 @@
 #include <NTPClient.h>
 #include <TimeLib.h>
 #include <EEPROM.h>
+#include <ArduinoOTA.h>
 
 #define EEPROM_SIZE 256
 #define SSID_ADDR 0
@@ -401,6 +402,20 @@ void setupWiFi() {
   }
 }
 
+void setupOTA() {
+  ArduinoOTA.setHostname("astro-light-control");
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA update started");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nOTA update finished");
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA Error[%u]\n", error);
+  });
+  ArduinoOTA.begin();
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(RELAY_PIN, OUTPUT);
@@ -408,6 +423,7 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   loadSettingsFromEEPROM();
   setupWiFi();
+  setupOTA();
   timeClient.setTimeOffset(utcOffset);
   timeClient.begin();
   if (timeClient.forceUpdate()) {
@@ -421,7 +437,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
-
+  ArduinoOTA.handle();
   static unsigned long lastRelayCheck = 0;
   if (millis() - lastRelayCheck > 60000) {
     controlRelay(now());
