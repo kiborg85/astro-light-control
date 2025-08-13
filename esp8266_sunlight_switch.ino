@@ -42,6 +42,9 @@ bool relayForced = false;
 bool apMode = false;
 unsigned long lastWiFiAttempt = 0;
 const unsigned long wifiRetryInterval = 30UL * 60UL * 1000UL; // 30 minutes
+int reconnectAttempts = 0;
+unsigned long lastReconnectAttempt = 0;
+const unsigned long reconnectInterval = 3UL * 60UL * 1000UL; // 3 minutes
 
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);
 
@@ -343,6 +346,8 @@ void startAPMode() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP("SunlightSetup");
   apMode = true;
+  reconnectAttempts = 0;
+  lastReconnectAttempt = 0;
   lastWiFiAttempt = millis();
   Serial.println("AP IP: " + WiFi.softAPIP().toString());
 }
@@ -364,6 +369,8 @@ bool attemptWiFiConnection() {
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWi-Fi connected: " + WiFi.localIP().toString());
+    reconnectAttempts = 0;
+    lastReconnectAttempt = 0;
     if (apMode) {
       Serial.println("Disabling AP mode");
       WiFi.softAPdisconnect(true);
@@ -414,16 +421,36 @@ void setup() {
 
 void loop() {
   server.handleClient();
+
+  static unsigned long lastRelayCheck = 0;
+  if (millis() - lastRelayCheck > 60000) {
+    controlRelay(now());
+    lastRelayCheck = millis();
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     timeClient.update();
-    static unsigned long lastRelayCheck = 0;
-    if (millis() - lastRelayCheck > 60000) {
-      controlRelay(now());
-      lastRelayCheck = millis();
+    reconnectAttempts = 0;
+    lastReconnectAttempt = 0;
+  } else {
+    if (!apMode) {
+      if (reconnectAttempts < 3 &&
+          (lastReconnectAttempt == 0 || millis() - lastReconnectAttempt >= reconnectInterval)) {
+        Serial.print("Wi-Fi disconnected, retry ");
+        Serial.println(reconnectAttempts + 1);
+        lastReconnectAttempt = millis();
+        if (!attemptWiFiConnection()) {
+          reconnectAttempts++;
+          if (reconnectAttempts >= 3) {
+            Serial.println("Reconnection failed after 3 attempts, enabling AP mode");
+            startAPMode();
+          }
+        }
+      }
+    } else if (millis() - lastWiFiAttempt > wifiRetryInterval) {
+      Serial.println("AP mode: periodic Wi-Fi reconnect attempt");
+      lastWiFiAttempt = millis();
+      attemptWiFiConnection();
     }
-  } else if (apMode && millis() - lastWiFiAttempt > wifiRetryInterval) {
-    Serial.println("AP mode: periodic Wi-Fi reconnect attempt");
-    lastWiFiAttempt = millis();
-    attemptWiFiConnection();
   }
 }
