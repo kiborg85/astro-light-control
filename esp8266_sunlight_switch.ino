@@ -328,6 +328,7 @@ void startWebInterface() {
   });
 
   server.on("/connect", []() {
+    Serial.println("Manual Wi-Fi connect requested");
     lastWiFiAttempt = millis();
     attemptWiFiConnection();
     server.sendHeader("Location", "/", true);
@@ -338,6 +339,7 @@ void startWebInterface() {
 }
 
 void startAPMode() {
+  Serial.println("Switching to Access Point mode");
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP("SunlightSetup");
   apMode = true;
@@ -347,12 +349,15 @@ void startAPMode() {
 
 bool attemptWiFiConnection() {
   if (apMode) {
+    Serial.println("Attempting Wi-Fi connection while in AP mode");
     WiFi.mode(WIFI_AP_STA);
   } else {
     WiFi.mode(WIFI_STA);
   }
   WiFi.begin(storedSSID.c_str(), storedPASS.c_str());
-  Serial.print("Connecting to Wi-Fi");
+  Serial.print("Connecting to Wi-Fi (SSID: ");
+  Serial.print(storedSSID);
+  Serial.print(")");
   for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
     Serial.print(".");
     delay(500);
@@ -360,6 +365,7 @@ bool attemptWiFiConnection() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWi-Fi connected: " + WiFi.localIP().toString());
     if (apMode) {
+      Serial.println("Disabling AP mode");
       WiFi.softAPdisconnect(true);
       WiFi.mode(WIFI_STA);
       apMode = false;
@@ -371,8 +377,11 @@ bool attemptWiFiConnection() {
 }
 
 void setupWiFi() {
+  Serial.println("Starting Wi-Fi setup");
   bool connected = false;
   for (int attempt = 0; attempt < 3 && !connected; attempt++) {
+    Serial.print("Wi-Fi attempt ");
+    Serial.println(attempt + 1);
     connected = attemptWiFiConnection();
     if (!connected && attempt < 2) {
       Serial.println("Retrying in 3 minutes...");
@@ -380,7 +389,7 @@ void setupWiFi() {
     }
   }
   if (!connected) {
-    Serial.println("Starting AP mode");
+    Serial.println("All attempts failed, starting AP mode");
     startAPMode();
   }
 }
@@ -413,6 +422,7 @@ void loop() {
       lastRelayCheck = millis();
     }
   } else if (apMode && millis() - lastWiFiAttempt > wifiRetryInterval) {
+    Serial.println("AP mode: periodic Wi-Fi reconnect attempt");
     lastWiFiAttempt = millis();
     attemptWiFiConnection();
   }
