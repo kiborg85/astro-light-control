@@ -88,12 +88,12 @@ void applyDST() {
     utcOffset += 3600;
   } else if (dstMode == 2) {
     // Simple DST rule: last Sunday of March to last Sunday of October
-    time_t now = timeClient.getEpochTime();
+    time_t current = now();
     tmElements_t tm;
-    breakTime(now, tm);
-    if ((tm.Month > 3 && tm.Month < 10) || 
-        (tm.Month == 3 && tm.Day >= 25 && weekday(now) == 1) ||
-        (tm.Month == 10 && !(tm.Day >= 25 && weekday(now) == 1))) {
+    breakTime(current, tm);
+    if ((tm.Month > 3 && tm.Month < 10) ||
+        (tm.Month == 3 && tm.Day >= 25 && weekday(current) == 1) ||
+        (tm.Month == 10 && !(tm.Day >= 25 && weekday(current) == 1))) {
       utcOffset += 3600;
     }
   }
@@ -141,11 +141,11 @@ time_t getSunEventUTC(time_t now, bool isSunrise, float lat, float lon) {
 }
 
 void updateSunTimes() {
-  time_t now = timeClient.getEpochTime();
+  time_t current = now();
 
   // Calculate sunrise and sunset in UTC first
-  time_t sunriseUTC = getSunEventUTC(now, true, latitude, longitude);
-  time_t sunsetUTC  = getSunEventUTC(now, false, latitude, longitude);
+  time_t sunriseUTC = getSunEventUTC(current, true, latitude, longitude);
+  time_t sunsetUTC  = getSunEventUTC(current, false, latitude, longitude);
 
   // Convert to local time and apply user offsets
   sunriseRaw = sunriseUTC + utcOffset;
@@ -161,8 +161,8 @@ String formatTime(time_t t) {
 }
 
 String formatDelta(time_t t) {
-  time_t now = timeClient.getEpochTime();
-  time_t delta = now - t;
+  time_t current = now();
+  time_t delta = current - t;
   int days = delta / 86400;
   int hours = (delta % 86400) / 3600;
   int mins = (delta % 3600) / 60;
@@ -187,10 +187,10 @@ void controlRelay(time_t now) {
 }
 
 void handleRoot() {
-  time_t now = timeClient.getEpochTime();
+  time_t current = now();
   bool relayState = digitalRead(RELAY_PIN) == LOW;
   String page = "<h1>ESP8266 Astro Light Control</h1>";
-  page += "<p>Current time: " + formatTime(now) + "</p>";
+  page += "<p>Current time: " + formatTime(current) + "</p>";
   page += "<p>Time zone: UTC" + String((utcOffset >= 0 ? "+" : "")) + String(utcOffset / 3600) + "</p>";
   page += "<p>Last NTP sync: " + formatDelta(lastSyncTime) + " ago</p>";
   page += "<p><b>Relay state: " + String(relayState ? "ON" : "OFF") + (relayForced ? " (forced)" : "") + "</b></p>";
@@ -235,15 +235,18 @@ void handleRoot() {
     </form>
     <script>
     function syncTime(){
-      fetch('/settime?epoch=' + Math.floor(Date.now()/1000))
+      const now = new Date();
+      const epoch = Math.floor(now.getTime()/1000 - now.getTimezoneOffset()*60);
+      fetch('/settime?epoch=' + epoch)
         .then(() => location.reload());
     }
     function setTime(e){
       e.preventDefault();
       const dt = document.getElementById('manualTime').value;
       if(!dt) return false;
-      const epoch = Date.parse(dt)/1000;
-      fetch('/settime?epoch=' + Math.floor(epoch))
+      const d = new Date(dt);
+      const epoch = Math.floor(d.getTime()/1000 - d.getTimezoneOffset()*60);
+      fetch('/settime?epoch=' + epoch)
         .then(() => location.reload());
       return false;
     }
@@ -279,7 +282,9 @@ void startWebInterface() {
 
   server.on("/sync", []() {
     if (timeClient.forceUpdate()) {
-      lastSyncTime = timeClient.getEpochTime();
+      time_t epoch = timeClient.getEpochTime();
+      setTime(epoch);
+      lastSyncTime = epoch;
       updateSunTimes();
       server.sendHeader("Location", "/", true);
       server.send(302, "text/plain", "Sync OK, redirecting...");
@@ -291,7 +296,7 @@ void startWebInterface() {
   server.on("/settime", []() {
     if (server.hasArg("epoch")) {
       time_t epoch = server.arg("epoch").toInt();
-      timeClient.setEpochTime(epoch);
+      setTime(epoch);
       lastSyncTime = epoch;
       updateSunTimes();
       server.sendHeader("Location", "/", true);
@@ -303,14 +308,14 @@ void startWebInterface() {
 
   server.on("/toggle", []() {
     relayForced = !relayForced;
-    controlRelay(timeClient.getEpochTime());
+    controlRelay(now());
     server.sendHeader("Location", "/", true);
     server.send(302, "text/plain", "Toggled");
   });
 
   server.on("/auto", []() {
     relayForced = false;
-    controlRelay(timeClient.getEpochTime());
+    controlRelay(now());
     server.sendHeader("Location", "/", true);
     server.send(302, "text/plain", "Auto mode enabled");
   });
@@ -346,7 +351,9 @@ void setup() {
   timeClient.setTimeOffset(utcOffset);
   timeClient.begin();
   if (timeClient.forceUpdate()) {
-    lastSyncTime = timeClient.getEpochTime();
+    time_t epoch = timeClient.getEpochTime();
+    setTime(epoch);
+    lastSyncTime = epoch;
   }
   updateSunTimes();
   startWebInterface();
@@ -358,7 +365,7 @@ void loop() {
     timeClient.update();
     static unsigned long lastRelayCheck = 0;
     if (millis() - lastRelayCheck > 60000) {
-      controlRelay(timeClient.getEpochTime());
+      controlRelay(now());
       lastRelayCheck = millis();
     }
   }
