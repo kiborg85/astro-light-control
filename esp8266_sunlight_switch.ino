@@ -39,6 +39,10 @@ time_t sunsetFinal = 0;
 time_t lastSyncTime = 0;
 bool relayForced = false;
 
+bool apMode = false;
+unsigned long lastWiFiAttempt = 0;
+const unsigned long wifiRetryInterval = 30UL * 60UL * 1000UL; // 30 minutes
+
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);
 
 void saveWiFiToEEPROM(const String& ssid, const String& pass) {
@@ -227,6 +231,9 @@ void handleRoot() {
     <form method='POST' action='/auto'>
       <input type='submit' value='Enable Automatic Mode'>
     </form>
+  )rawliteral";
+  if (apMode) page += "<form method='POST' action='/connect'><input type='submit' value='Connect to Wi-Fi'></form>";
+  page += R"rawliteral(
     <h3>Manual Time</h3>
     <button onclick='syncTime()'>Sync Browser Time</button>
     <form onsubmit='return setTime(event)'>
@@ -320,11 +327,30 @@ void startWebInterface() {
     server.send(302, "text/plain", "Auto mode enabled");
   });
 
+  server.on("/connect", []() {
+    lastWiFiAttempt = millis();
+    attemptWiFiConnection();
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "Connecting...");
+  });
+
   server.begin();
 }
 
-void setupWiFi() {
-  WiFi.mode(WIFI_STA);
+void startAPMode() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("SunlightSetup");
+  apMode = true;
+  lastWiFiAttempt = millis();
+  Serial.println("AP IP: " + WiFi.softAPIP().toString());
+}
+
+bool attemptWiFiConnection() {
+  if (apMode) {
+    WiFi.mode(WIFI_AP_STA);
+  } else {
+    WiFi.mode(WIFI_STA);
+  }
   WiFi.begin(storedSSID.c_str(), storedPASS.c_str());
   Serial.print("Connecting to Wi-Fi");
   for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
@@ -333,11 +359,29 @@ void setupWiFi() {
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWi-Fi connected: " + WiFi.localIP().toString());
-  } else {
-    Serial.println("\nWi-Fi failed. Starting AP.");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("SunlightSetup");
-    Serial.println("AP IP: " + WiFi.softAPIP().toString());
+    if (apMode) {
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      apMode = false;
+    }
+    return true;
+  }
+  Serial.println("\nWi-Fi connection failed");
+  return false;
+}
+
+void setupWiFi() {
+  bool connected = false;
+  for (int attempt = 0; attempt < 3 && !connected; attempt++) {
+    connected = attemptWiFiConnection();
+    if (!connected && attempt < 2) {
+      Serial.println("Retrying in 3 minutes...");
+      delay(180000);
+    }
+  }
+  if (!connected) {
+    Serial.println("Starting AP mode");
+    startAPMode();
   }
 }
 
@@ -368,5 +412,8 @@ void loop() {
       controlRelay(now());
       lastRelayCheck = millis();
     }
+  } else if (apMode && millis() - lastWiFiAttempt > wifiRetryInterval) {
+    lastWiFiAttempt = millis();
+    attemptWiFiConnection();
   }
 }
