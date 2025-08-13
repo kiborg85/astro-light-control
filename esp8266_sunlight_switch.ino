@@ -1,4 +1,5 @@
 // ===== File: astro_light_control.ino =====
+// Controls a relay based on sunrise and sunset calculations.
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <WiFiUdp.h>
@@ -7,48 +8,49 @@
 #include <EEPROM.h>
 #include <ArduinoOTA.h>
 
-#define EEPROM_SIZE 256
-#define SSID_ADDR 0
-#define PASS_ADDR 100
-#define SUNRISE_OFFSET_ADDR 140
-#define SUNSET_OFFSET_ADDR 144
-#define TZ_OFFSET_ADDR 148
-#define LAT_ADDR 152
-#define LON_ADDR 160
-#define DST_MODE_ADDR 168  // 0=off, 1=manual, 2=auto
-#define DST_MANUAL_ADDR 169 // 0=standard, 1=summer
-#define RELAY_PIN 5
+#define EEPROM_SIZE 256        // total bytes reserved in EEPROM
+#define SSID_ADDR 0            // where SSID string begins
+#define PASS_ADDR 100          // where password string begins
+#define SUNRISE_OFFSET_ADDR 140 // sunrise offset (int32_t)
+#define SUNSET_OFFSET_ADDR 144 // sunset offset (int32_t)
+#define TZ_OFFSET_ADDR 148     // time zone offset (int)
+#define LAT_ADDR 152           // latitude (float)
+#define LON_ADDR 160           // longitude (float)
+#define DST_MODE_ADDR 168      // 0=off, 1=manual, 2=auto
+#define DST_MANUAL_ADDR 169    // 0=standard, 1=summer
+#define RELAY_PIN 5            // GPIO pin controlling the relay
 
-ESP8266WebServer server(80);
-WiFiUDP ntpUDP;
+ESP8266WebServer server(80);           // HTTP server for configuration UI
+WiFiUDP ntpUDP;                        // UDP client used by NTP
 
-int utcOffset = 3 * 3600;
-int32_t sunriseOffsetMin = 0;
-int32_t sunsetOffsetMin = 0;
-float latitude = 46.4825;
-float longitude = 30.7233;
-uint8_t dstMode = 0;
-uint8_t dstManual = 0;
+int utcOffset = 3 * 3600;              // base time zone offset in seconds
+int32_t sunriseOffsetMin = 0;          // user sunrise adjustment in minutes
+int32_t sunsetOffsetMin = 0;           // user sunset adjustment in minutes
+float latitude = 46.4825;              // device latitude for sun calculations
+float longitude = 30.7233;             // device longitude for sun calculations
+uint8_t dstMode = 0;                   // daylight saving mode selector
+uint8_t dstManual = 0;                 // manual DST state when dstMode==1
 
-String storedSSID;
-String storedPASS;
+String storedSSID;                     // Wi-Fi SSID read from EEPROM
+String storedPASS;                     // Wi-Fi password read from EEPROM
 
-time_t sunriseRaw = 0;
-time_t sunsetRaw = 0;
-time_t sunriseFinal = 0;
-time_t sunsetFinal = 0;
-time_t lastSyncTime = 0;
-bool relayForced = false;
+time_t sunriseRaw = 0;                 // calculated sunrise before offsets
+time_t sunsetRaw = 0;                  // calculated sunset before offsets
+time_t sunriseFinal = 0;               // sunrise time after applying offset
+time_t sunsetFinal = 0;                // sunset time after applying offset
+time_t lastSyncTime = 0;               // last successful NTP sync
+bool relayForced = false;              // manual relay override flag
 
-bool apMode = false;
-unsigned long lastWiFiAttempt = 0;
+bool apMode = false;                   // access point mode active?
+unsigned long lastWiFiAttempt = 0;     // last AP reconnection attempt
 const unsigned long wifiRetryInterval = 30UL * 60UL * 1000UL; // 30 minutes
-int reconnectAttempts = 0;
-unsigned long lastReconnectAttempt = 0;
+int reconnectAttempts = 0;             // STA reconnect try counter
+unsigned long lastReconnectAttempt = 0; // timestamp of last STA retry
 const unsigned long reconnectInterval = 3UL * 60UL * 1000UL; // 3 minutes
 
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000);
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffset, 3600 * 1000); // sync time every hour
 
+// Store Wi-Fi credentials in EEPROM
 void saveWiFiToEEPROM(const String& ssid, const String& pass) {
   for (int i = 0; i < 32; i++) {
     EEPROM.write(SSID_ADDR + i, i < ssid.length() ? ssid[i] : 0);
@@ -57,6 +59,7 @@ void saveWiFiToEEPROM(const String& ssid, const String& pass) {
   EEPROM.commit();
 }
 
+// Persist adjustable settings like offsets and location
 void saveSettingsToEEPROM() {
   EEPROM.put(SUNRISE_OFFSET_ADDR, sunriseOffsetMin);
   EEPROM.put(SUNSET_OFFSET_ADDR, sunsetOffsetMin);
@@ -68,6 +71,7 @@ void saveSettingsToEEPROM() {
   EEPROM.commit();
 }
 
+// Load configuration and credentials from EEPROM on boot
 void loadSettingsFromEEPROM() {
   char ssid[33], pass[33];
   for (int i = 0; i < 32; i++) {
@@ -91,11 +95,13 @@ void loadSettingsFromEEPROM() {
   timeClient.setTimeOffset(utcOffset);
 }
 
+// Adjust time offset based on daylight saving preferences
 void applyDST() {
+  // Manual DST lets the user explicitly toggle summer time
   if (dstMode == 1 && dstManual == 1) {
     utcOffset += 3600;
   } else if (dstMode == 2) {
-    // Simple DST rule: last Sunday of March to last Sunday of October
+    // Auto mode approximates European DST: last Sun of Mar to last Sun of Oct
     time_t current = now();
     tmElements_t tm;
     breakTime(current, tm);
@@ -107,10 +113,12 @@ void applyDST() {
   }
 }
 
+// Convert a timestamp to day-of-year
 int getDayOfYear(time_t t) {
   tmElements_t tm;
   breakTime(t, tm);
   int day = tm.Day;
+  // accumulate days in prior months, accounting for leap years
   for (int m = 1; m < tm.Month; m++) {
     if (m == 2) day += 28 + (year(t) % 4 == 0 ? 1 : 0);
     else if (m == 4 || m == 6 || m == 9 || m == 11) day += 30;
@@ -119,6 +127,7 @@ int getDayOfYear(time_t t) {
   return day;
 }
 
+// Compute sunrise or sunset time in UTC seconds
 float calculateSolarEventUTC(bool isSunrise, float lat, float lon, int doy) {
   float zenith = 90.833;
   float D2R = PI / 180.0;
@@ -138,6 +147,7 @@ float calculateSolarEventUTC(bool isSunrise, float lat, float lon, int doy) {
   return UT * 3600;
 }
 
+// Wrapper to get sunrise or sunset as a time_t
 time_t getSunEventUTC(time_t now, bool isSunrise, float lat, float lon) {
   int doy = getDayOfYear(now);
   float utcSecs = calculateSolarEventUTC(isSunrise, lat, lon, doy);
@@ -148,8 +158,9 @@ time_t getSunEventUTC(time_t now, bool isSunrise, float lat, float lon) {
   return makeTime(tm) + (time_t)utcSecs;
 }
 
+// Recalculate raw and adjusted sunrise/sunset times
 void updateSunTimes() {
-  time_t current = now();
+  time_t current = now(); // use current date for solar math
 
   // Calculate sunrise and sunset in UTC first
   time_t sunriseUTC = getSunEventUTC(current, true, latitude, longitude);
@@ -179,8 +190,9 @@ String formatDelta(time_t t) {
   return String(buf);
 }
 
+// Decide whether the relay should be on based on current time
 void controlRelay(time_t now) {
-  if (relayForced) {
+  if (relayForced) {                 // manual override keeps light on
     digitalWrite(RELAY_PIN, LOW);
     Serial.println("Relay ON (forced)");
     return;
@@ -194,9 +206,10 @@ void controlRelay(time_t now) {
   }
 }
 
+// Generate the main status page and configuration form
 void handleRoot() {
-  time_t current = now();
-  bool relayState = digitalRead(RELAY_PIN) == LOW;
+  time_t current = now();                      // current local time
+  bool relayState = digitalRead(RELAY_PIN) == LOW; // true if relay energized
   String page = "<h1>ESP8266 Astro Light Control</h1>";
   page += "<p>Current time: " + formatTime(current) + "</p>";
   page += "<p>Time zone: UTC" + String((utcOffset >= 0 ? "+" : "")) + String(utcOffset / 3600) + "</p>";
@@ -266,6 +279,7 @@ void handleRoot() {
   server.send(200, "text/html", page);
 }
 
+// Configure HTTP handlers for status and settings pages
 void startWebInterface() {
   server.on("/", handleRoot);
 
@@ -342,10 +356,11 @@ void startWebInterface() {
   server.begin();
 }
 
+// Switch device into Access Point mode for configuration
 void startAPMode() {
   Serial.println("Switching to Access Point mode");
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP("SunlightSetup");
+  WiFi.mode(WIFI_AP_STA);                  // allow concurrent AP and STA
+  WiFi.softAP("SunlightSetup");           // open config network
   apMode = true;
   reconnectAttempts = 0;
   lastReconnectAttempt = 0;
@@ -353,6 +368,7 @@ void startAPMode() {
   Serial.println("AP IP: " + WiFi.softAPIP().toString());
 }
 
+// Try to connect to the stored Wi-Fi network
 bool attemptWiFiConnection() {
   if (apMode) {
     Serial.println("Attempting Wi-Fi connection while in AP mode");
@@ -384,6 +400,7 @@ bool attemptWiFiConnection() {
   return false;
 }
 
+// Attempt initial Wi-Fi connection with retries and AP fallback
 void setupWiFi() {
   Serial.println("Starting Wi-Fi setup");
   bool connected = false;
@@ -402,6 +419,7 @@ void setupWiFi() {
   }
 }
 
+// Prepare over-the-air update support
 void setupOTA() {
   ArduinoOTA.setHostname("astro-light-control");
   ArduinoOTA.onStart([]() {
@@ -416,6 +434,7 @@ void setupOTA() {
   ArduinoOTA.begin();
 }
 
+// Initialize hardware, load settings, and start services
 void setup() {
   Serial.begin(115200);
   pinMode(RELAY_PIN, OUTPUT);
@@ -435,6 +454,7 @@ void setup() {
   startWebInterface();
 }
 
+// Main loop maintains services and reconnect logic
 void loop() {
   server.handleClient();
   ArduinoOTA.handle();
