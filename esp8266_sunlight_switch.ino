@@ -16,6 +16,7 @@
 #define LON_ADDR 160
 #define DST_MODE_ADDR 168  // 0=off, 1=manual, 2=auto
 #define DST_MANUAL_ADDR 169 // 0=standard, 1=summer
+#define RELAY_PIN 5
 
 ESP8266WebServer server(80);
 WiFiUDP ntpUDP;
@@ -141,10 +142,16 @@ time_t getSunEventUTC(time_t now, bool isSunrise, float lat, float lon) {
 
 void updateSunTimes() {
   time_t now = timeClient.getEpochTime();
-  sunriseRaw = getSunEventUTC(now, true, latitude, longitude) + utcOffset;
-  sunsetRaw  = getSunEventUTC(now, false, latitude, longitude) + utcOffset;
-  sunriseFinal = sunriseRaw + sunriseOffsetMin * 60;
-  sunsetFinal  = sunsetRaw  + sunsetOffsetMin * 60;
+
+  // Calculate sunrise and sunset in UTC first
+  time_t sunriseUTC = getSunEventUTC(now, true, latitude, longitude);
+  time_t sunsetUTC  = getSunEventUTC(now, false, latitude, longitude);
+
+  // Convert to local time and apply user offsets
+  sunriseRaw = sunriseUTC + utcOffset;
+  sunsetRaw  = sunsetUTC + utcOffset;
+  sunriseFinal = sunriseUTC + sunriseOffsetMin * 60 + utcOffset;
+  sunsetFinal  = sunsetUTC  + sunsetOffsetMin * 60 + utcOffset;
 }
 
 String formatTime(time_t t) {
@@ -166,22 +173,22 @@ String formatDelta(time_t t) {
 
 void controlRelay(time_t now) {
   if (relayForced) {
-    digitalWrite(5, HIGH);
+    digitalWrite(RELAY_PIN, LOW);
     Serial.println("Relay ON (forced)");
     return;
   }
   if (now >= sunsetFinal || now <= sunriseFinal) {
-    digitalWrite(5, HIGH);
+    digitalWrite(RELAY_PIN, LOW);
     Serial.println("Relay ON");
   } else {
-    digitalWrite(5, LOW);
+    digitalWrite(RELAY_PIN, HIGH);
     Serial.println("Relay OFF");
   }
 }
 
 void handleRoot() {
   time_t now = timeClient.getEpochTime();
-  bool relayState = digitalRead(5);
+  bool relayState = digitalRead(RELAY_PIN) == LOW;
   String page = "<h1>ESP8266 Astro Light Control</h1>";
   page += "<p>Current time: " + formatTime(now) + "</p>";
   page += "<p>Time zone: UTC" + String((utcOffset >= 0 ? "+" : "")) + String(utcOffset / 3600) + "</p>";
@@ -216,6 +223,9 @@ void handleRoot() {
     </form>
     <form method='POST' action='/toggle'>
       <input type='submit' value='Toggle Relay State'>
+    </form>
+    <form method='POST' action='/auto'>
+      <input type='submit' value='Enable Automatic Mode'>
     </form>
   )rawliteral";
   server.send(200, "text/html", page);
@@ -264,6 +274,13 @@ void startWebInterface() {
     server.send(302, "text/plain", "Toggled");
   });
 
+  server.on("/auto", []() {
+    relayForced = false;
+    controlRelay(timeClient.getEpochTime());
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "Auto mode enabled");
+  });
+
   server.begin();
 }
 
@@ -287,8 +304,8 @@ void setupWiFi() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(5, OUTPUT);
-  digitalWrite(5, LOW);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH);
   EEPROM.begin(EEPROM_SIZE);
   loadSettingsFromEEPROM();
   setupWiFi();
