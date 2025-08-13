@@ -235,15 +235,18 @@ void handleRoot() {
     </form>
     <script>
     function syncTime(){
-      fetch('/settime?epoch=' + Math.floor(Date.now()/1000))
+      const now = new Date();
+      const epoch = Math.floor(now.getTime()/1000 - now.getTimezoneOffset()*60);
+      fetch('/settime?epoch=' + epoch)
         .then(() => location.reload());
     }
     function setTime(e){
       e.preventDefault();
       const dt = document.getElementById('manualTime').value;
       if(!dt) return false;
-      const epoch = Date.parse(dt)/1000;
-      fetch('/settime?epoch=' + Math.floor(epoch))
+      const d = new Date(dt);
+      const epoch = Math.floor(d.getTime()/1000 - d.getTimezoneOffset()*60);
+      fetch('/settime?epoch=' + epoch)
         .then(() => location.reload());
       return false;
     }
