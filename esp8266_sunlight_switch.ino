@@ -227,6 +227,27 @@ void handleRoot() {
     <form method='POST' action='/auto'>
       <input type='submit' value='Enable Automatic Mode'>
     </form>
+    <h3>Manual Time</h3>
+    <button onclick='syncTime()'>Sync Browser Time</button>
+    <form onsubmit='return setTime(event)'>
+      <input type='datetime-local' id='manualTime'>
+      <input type='submit' value='Set Time'>
+    </form>
+    <script>
+    function syncTime(){
+      fetch('/settime?epoch=' + Math.floor(Date.now()/1000))
+        .then(() => location.reload());
+    }
+    function setTime(e){
+      e.preventDefault();
+      const dt = document.getElementById('manualTime').value;
+      if(!dt) return false;
+      const epoch = Date.parse(dt)/1000;
+      fetch('/settime?epoch=' + Math.floor(epoch))
+        .then(() => location.reload());
+      return false;
+    }
+    </script>
   )rawliteral";
   server.send(200, "text/html", page);
 }
@@ -264,6 +285,19 @@ void startWebInterface() {
       server.send(302, "text/plain", "Sync OK, redirecting...");
     } else {
       server.send(500, "text/plain", "Sync failed");
+    }
+  });
+
+  server.on("/settime", []() {
+    if (server.hasArg("epoch")) {
+      time_t epoch = server.arg("epoch").toInt();
+      timeClient.setEpochTime(epoch);
+      lastSyncTime = epoch;
+      updateSunTimes();
+      server.sendHeader("Location", "/", true);
+      server.send(302, "text/plain", "Time updated");
+    } else {
+      server.send(400, "text/plain", "Missing epoch");
     }
   });
 
