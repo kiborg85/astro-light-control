@@ -40,6 +40,7 @@ time_t sunriseFinal = 0;               // sunrise time after applying offset
 time_t sunsetFinal = 0;                // sunset time after applying offset
 time_t lastSyncTime = 0;               // last successful NTP sync
 bool relayForced = false;              // manual relay override flag
+int lastCalculatedDay = -1;            // day number of last sun time calculation
 
 bool apMode = false;                   // access point mode active?
 unsigned long lastWiFiAttempt = 0;     // last AP reconnection attempt
@@ -451,6 +452,7 @@ void setup() {
     lastSyncTime = epoch;
   }
   updateSunTimes();
+  lastCalculatedDay = day(now());
   startWebInterface();
 }
 
@@ -458,9 +460,22 @@ void setup() {
 void loop() {
   server.handleClient();
   ArduinoOTA.handle();
+  time_t current = now();
+  if (lastCalculatedDay != day(current)) {
+    if (timeClient.forceUpdate()) {
+      time_t epoch = timeClient.getEpochTime();
+      setTime(epoch);
+      lastSyncTime = epoch;
+      current = now();
+    }
+    updateSunTimes();
+    lastCalculatedDay = day(current);
+    controlRelay(current);
+  }
+
   static unsigned long lastRelayCheck = 0;
   if (millis() - lastRelayCheck > 60000) {
-    controlRelay(now());
+    controlRelay(current);
     lastRelayCheck = millis();
   }
 
